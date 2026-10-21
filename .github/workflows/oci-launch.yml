@@ -1,12 +1,16 @@
 name: OCI A1 launch
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 permissions:
   actions: write
   contents: read
+
+concurrency:
+  group: oci-launch
+  cancel-in-progress: false
 
 jobs:
   launch:
@@ -14,10 +18,11 @@ jobs:
     timeout-minutes: 10
     env:
       OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
+      SUPPRESS_LABEL_WARNING: "True"
       TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-      AD: "QvJy:AP-SINGAPORE-2-AD-1"
-      SUBNET_ID: "ocid1.subnet.oc1.ap-singapore-2.aaaaaaaaafe5euogsuguczvtkga7xet46icumcdhiugehc5cxykjrgktk4vq"
-      IMAGE_ID: "ocid1.image.oc1.ap-singapore-2.aaaaaaaa6gkyliev4d2suzq6aapbtlscpyw7e5t3o542cw27ki2um7exmt3q"
+      AD: ${{ secrets.OCI_AD }}
+      SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
+      IMAGE_ID: ${{ secrets.OCI_IMAGE_ID }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Install OCI CLI
@@ -64,5 +69,7 @@ jobs:
             echo "SUCCESS - server created."
             gh workflow disable oci-launch.yml --repo "$GITHUB_REPOSITORY"
           else
-            echo "Unexpected error:"; echo "$OUT"; exit 1
+            echo "Unexpected error (details trimmed):"
+            echo "$OUT" | grep -iE '"(code|message)"' || echo "$OUT" | head -c 300
+            exit 1
           fi
