@@ -1,0 +1,68 @@
+name: OCI A1 launch
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
+      TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      AD: "QvJy:AP-SINGAPORE-2-AD-1"
+      SUBNET_ID: "ocid1.subnet.oc1.ap-singapore-2.aaaaaaaaafe5euogsuguczvtkga7xet46icumcdhiugehc5cxykjrgktk4vq"
+      IMAGE_ID: "ocid1.image.oc1.ap-singapore-2.aaaaaaaa6gkyliev4d2suzq6aapbtlscpyw7e5t3o542cw27ki2um7exmt3q"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Install OCI CLI
+        run: pip install oci-cli
+
+      - name: Write OCI config
+        env:
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          mkdir -p ~/.oci
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/key.pem
+          chmod 600 ~/.oci/key.pem
+          printf '[DEFAULT]\nuser=%s\nfingerprint=%s\ntenancy=%s\nregion=%s\nkey_file=%s\n' "$OCI_USER_OCID" "$OCI_FINGERPRINT" "$TENANCY" "$OCI_REGION" "$HOME/.oci/key.pem" > ~/.oci/config
+
+      - name: Launch if no A1 server exists
+        env:
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: |
+          COUNT=$(oci compute instance list --compartment-id "$TENANCY" --query "data[?shape=='VM.Standard.A1.Flex' && \"lifecycle-state\"!='TERMINATED'] | length(@)" --raw-output)
+          if [ "$COUNT" -gt 0 ]; then
+            echo "An A1 server already exists. Disabling this workflow."
+            gh workflow disable oci-launch.yml --repo "$GITHUB_REPOSITORY"
+            exit 0
+          fi
+          echo "$SSH_PUBLIC_KEY" > /tmp/key.pub
+          set +e
+          OUT=$(oci compute instance launch \
+            --compartment-id "$TENANCY" \
+            --availability-domain "$AD" \
+            --shape VM.Standard.A1.Flex \
+            --shape-config '{"ocpus":1,"memoryInGbs":6}' \
+            --display-name n8n-server \
+            --image-id "$IMAGE_ID" \
+            --subnet-id "$SUBNET_ID" \
+            --ssh-authorized-keys-file /tmp/key.pub \
+            --boot-volume-size-in-gbs 50 \
+            --assign-public-ip true 2>&1)
+          if echo "$OUT" | grep -qiE "out of (host )?capacity|TooManyRequests"; then
+            echo "No capacity right now. Will retry on the next run."
+          elif echo "$OUT" | grep -q '"lifecycle-state"'; then
+            echo "SUCCESS - server created."
+            gh workflow disable oci-launch.yml --repo "$GITHUB_REPOSITORY"
+          else
+            echo "Unexpected error:"; echo "$OUT"; exit 1
+          fi
